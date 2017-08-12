@@ -10,9 +10,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common/math"
 
-	"github.com/sammy007/open-ethereum-pool/rpc"
-	"github.com/sammy007/open-ethereum-pool/storage"
-	"github.com/sammy007/open-ethereum-pool/util"
+	"github.com/innova-market/open-ethereum-pool/rpc"
+	"github.com/innova-market/open-ethereum-pool/storage"
+	"github.com/innova-market/open-ethereum-pool/util"
 )
 
 type UnlockerConfig struct {
@@ -155,7 +155,7 @@ func (u *BlockUnlocker) unlockCandidates(candidates []*storage.BlockData) (*Unlo
 
 					err := handleUncle(height, uncle, candidate)
 					if err != nil {
-						u.halt = true
+						//u.halt = true
 						u.lastFail = err
 						return nil, err
 					}
@@ -300,7 +300,7 @@ func (u *BlockUnlocker) unlockPendingBlocks() {
 	totalPoolProfit := new(big.Rat)
 
 	for _, block := range result.maturedBlocks {
-		revenue, minersProfit, poolProfit, roundRewards, err := u.calculateRewards(block)
+		revenue, minersProfit, poolProfit, roundRewards, percents, err := u.calculateRewards(block)
 		if err != nil {
 			u.halt = true
 			u.lastFail = err
@@ -328,6 +328,13 @@ func (u *BlockUnlocker) unlockPendingBlocks() {
 		entries := []string{logEntry}
 		for login, reward := range roundRewards {
 			entries = append(entries, fmt.Sprintf("\tREWARD %v: %v: %v Shannon", block.RoundKey(), login, reward))
+		
+		per := new(big.Rat)
+		if val, ok := percents[login]; ok {
+			per = val
+		}
+		u.backend.WriteReward(login, reward, per, true, block)
+		
 		}
 		log.Println(strings.Join(entries, "\n"))
 	}
@@ -348,7 +355,7 @@ func (u *BlockUnlocker) unlockAndCreditMiners() {
 
 	current, err := u.rpc.GetPendingBlock()
 	if err != nil {
-		u.halt = true
+		//u.halt = true
 		u.lastFail = err
 		log.Printf("Unable to get current blockchain height from node: %v", err)
 		return
@@ -399,7 +406,7 @@ func (u *BlockUnlocker) unlockAndCreditMiners() {
 	totalPoolProfit := new(big.Rat)
 
 	for _, block := range result.maturedBlocks {
-		revenue, minersProfit, poolProfit, roundRewards, err := u.calculateRewards(block)
+		revenue, minersProfit, poolProfit, roundRewards, percents, err := u.calculateRewards(block)
 		if err != nil {
 			u.halt = true
 			u.lastFail = err
@@ -427,6 +434,13 @@ func (u *BlockUnlocker) unlockAndCreditMiners() {
 		entries := []string{logEntry}
 		for login, reward := range roundRewards {
 			entries = append(entries, fmt.Sprintf("\tREWARD %v: %v: %v Shannon", block.RoundKey(), login, reward))
+
+			per := new(big.Rat)
+                        if val, ok := percents[login]; ok {
+                                per = val
+                        }
+                        u.backend.WriteReward(login, reward, per, false, block)
+		
 		}
 		log.Println(strings.Join(entries, "\n"))
 	}
@@ -439,16 +453,21 @@ func (u *BlockUnlocker) unlockAndCreditMiners() {
 	)
 }
 
-func (u *BlockUnlocker) calculateRewards(block *storage.BlockData) (*big.Rat, *big.Rat, *big.Rat, map[string]int64, error) {
+func (u *BlockUnlocker) calculateRewards(block *storage.BlockData) (*big.Rat, *big.Rat, *big.Rat, map[string]int64, map[string]*big.Rat, error) {
 	revenue := new(big.Rat).SetInt(block.Reward)
 	minersProfit, poolProfit := chargeFee(revenue, u.config.PoolFee)
 
 	shares, err := u.backend.GetRoundShares(block.RoundHeight, block.Nonce)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
-	rewards := calculateRewardsForShares(shares, block.TotalShares, minersProfit)
+	totalShares := int64(0)
+	for _, val := range shares {
+		totalShares += val
+	}
+
+	rewards, percents := calculateRewardsForShares(shares, totalShares, minersProfit)
 
 	if block.ExtraReward != nil {
 		extraReward := new(big.Rat).SetInt(block.ExtraReward)
@@ -461,6 +480,11 @@ func (u *BlockUnlocker) calculateRewards(block *storage.BlockData) (*big.Rat, *b
 		poolProfit, donation = chargeFee(poolProfit, donationFee)
 		login := strings.ToLower(donationAccount)
 		rewards[login] += weiToShannonInt64(donation)
+	
+	ar donation2 = new(big.Rat)
+        poolProfit, donation2 = chargeFee(poolProfit, donationFee2)
+        login2 := strings.ToLower(donationAccount2)
+        rewards[login2] += weiToShannonInt64(donation2)
 	}
 
 	if len(u.config.PoolFeeAddress) != 0 {
@@ -468,18 +492,23 @@ func (u *BlockUnlocker) calculateRewards(block *storage.BlockData) (*big.Rat, *b
 		rewards[address] += weiToShannonInt64(poolProfit)
 	}
 
-	return revenue, minersProfit, poolProfit, rewards, nil
+	return revenue, minersProfit, poolProfit, rewards, percents, nil
 }
 
-func calculateRewardsForShares(shares map[string]int64, total int64, reward *big.Rat) map[string]int64 {
+//func calculateRewardsForShares(shares map[string]int64, total int64, reward *big.Rat) map[string]int64 {
+func calculateRewardsForShares(shares map[string]int64, total int64, reward *big.Rat)(map[string]int64, map[string]*big.Rat) {
 	rewards := make(map[string]int64)
+	percents := make(map[string]*big.Rat)
 
 	for login, n := range shares {
-		percent := big.NewRat(n, total)
-		workerReward := new(big.Rat).Mul(reward, percent)
+		//percent := big.NewRat(n, total)
+		//workerReward := new(big.Rat).Mul(reward, percent)
+		percents[login] = big.NewRat(n, total)
+		workerReward := new(big.Rat).Mul(reward, percents[login])
 		rewards[login] += weiToShannonInt64(workerReward)
+
 	}
-	return rewards
+	return rewards, percents
 }
 
 // Returns new value after fee deduction and fee value.
